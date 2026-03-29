@@ -1,132 +1,195 @@
 <?php
 /**
  * Plugin Name: YUMMA AI Chat
- * Plugin URI: https://github.com/gaiagent0/yumma-chat
- * Description: AI chat asszisztens a YUMMA tea webshophoz — Qwen API alapon
- * Version: 1.0.0
- * Author: gaiagent0
+ * Plugin URI:  https://github.com/gaiagent0/yumma-chat
+ * Description: AI chat asszisztens WooCommerce webshophoz — OpenAI-compatible API (Qwen, OpenAI, Groq, Ollama...)
+ * Version:     1.1.0
+ * Author:      gaiagent0
  * Text Domain: yumma-chat
  */
 
 if (!defined('ABSPATH')) exit;
 
-define('YUMMA_CHAT_VERSION', '1.0.0');
-define('YUMMA_CHAT_DIR', plugin_dir_path(__FILE__));
-define('YUMMA_CHAT_URL', plugin_dir_url(__FILE__));
+define('YUMMA_CHAT_VERSION', '1.1.0');
 
-// --- Settings ---
+// Default endpoints for quick selection
+const YUMMA_CHAT_ENDPOINTS = [
+    'https://dashscope-intl.aliyuncs.com/compatible-mode/v1' => 'Alibaba DashScope (Qwen)',
+    'https://api.openai.com/v1'                               => 'OpenAI',
+    'https://api.groq.com/openai/v1'                          => 'Groq (ingyenes)',
+    'https://openrouter.ai/api/v1'                            => 'OpenRouter',
+    'http://localhost:11434/v1'                               => 'Ollama (lokalis)',
+    'custom'                                                  => 'Egyeni endpoint...',
+];
+
+// --- Admin settings ---
 add_action('admin_menu', function () {
     add_options_page('YUMMA AI Chat', 'YUMMA AI Chat', 'manage_options', 'yumma-chat', 'yumma_chat_settings_page');
 });
 
 add_action('admin_init', function () {
     register_setting('yumma_chat', 'yumma_chat_api_key');
+    register_setting('yumma_chat', 'yumma_chat_endpoint', [
+        'default' => 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
+    ]);
+    register_setting('yumma_chat', 'yumma_chat_endpoint_custom');
     register_setting('yumma_chat', 'yumma_chat_model', ['default' => 'qwen-plus']);
     register_setting('yumma_chat', 'yumma_chat_position', ['default' => 'bottom-right']);
+    register_setting('yumma_chat', 'yumma_chat_system_prompt');
 });
 
-function yumma_chat_settings_page() { ?>
+function yumma_chat_settings_page() {
+    $saved_endpoint = get_option('yumma_chat_endpoint', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1');
+    $is_custom = !array_key_exists($saved_endpoint, YUMMA_CHAT_ENDPOINTS) || $saved_endpoint === 'custom';
+    ?>
     <div class="wrap">
-        <h1>YUMMA AI Chat Beallitasok</h1>
+        <h1>YUMMA AI Chat <span style="font-size:.7em;color:#888;">v<?php echo YUMMA_CHAT_VERSION; ?></span></h1>
         <form method="post" action="options.php">
             <?php settings_fields('yumma_chat'); ?>
             <table class="form-table">
                 <tr>
-                    <th>DashScope API Key</th>
-                    <td><input type="password" name="yumma_chat_api_key" value="<?php echo esc_attr(get_option('yumma_chat_api_key')); ?>" size="60" /></td>
+                    <th scope="row">API Endpoint</th>
+                    <td>
+                        <select name="yumma_chat_endpoint" id="yumma_endpoint_select" onchange="yummaEndpointToggle(this)">
+                            <?php foreach (YUMMA_CHAT_ENDPOINTS as $url => $label):
+                                $selected = ($url === $saved_endpoint) || ($is_custom && $url === 'custom');
+                            ?>
+                                <option value="<?php echo esc_attr($url); ?>" <?php selected($selected); ?>><?php echo esc_html($label); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <br><br>
+                        <div id="yumma_custom_endpoint_row" style="<?php echo $is_custom ? '' : 'display:none'; ?>">
+                            <input type="url" name="yumma_chat_endpoint_custom"
+                                value="<?php echo esc_attr(get_option('yumma_chat_endpoint_custom', $is_custom ? $saved_endpoint : '')); ?>"
+                                size="60" placeholder="https://myapi.example.com/v1" />
+                            <p class="description">OpenAI-compatible /v1 endpoint URL</p>
+                        </div>
+                    </td>
                 </tr>
                 <tr>
-                    <th>Model</th>
+                    <th scope="row">API Key</th>
                     <td>
-                        <select name="yumma_chat_model">
-                            <?php foreach (['qwen-turbo' => 'qwen-turbo (gyors)', 'qwen-plus' => 'qwen-plus (ajanlott)', 'qwen-max' => 'qwen-max (eros)'] as $v => $l): ?>
-                                <option value="<?php echo $v; ?>" <?php selected(get_option('yumma_chat_model'), $v); ?>><?php echo $l; ?></option>
-                            <?php endforeach; ?>
+                        <input type="password" name="yumma_chat_api_key"
+                            value="<?php echo esc_attr(get_option('yumma_chat_api_key')); ?>"
+                            size="60" placeholder="sk-..." autocomplete="off" />
+                        <p class="description">Alibaba: sk-xxx | OpenAI: sk-xxx | Groq: gsk_xxx | Ollama: nincs szukseg</p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">Model neve</th>
+                    <td>
+                        <input type="text" name="yumma_chat_model"
+                            value="<?php echo esc_attr(get_option('yumma_chat_model', 'qwen-plus')); ?>"
+                            size="40" placeholder="qwen-plus" />
+                        <p class="description">Pl: qwen-plus, qwen-turbo, gpt-4o-mini, llama-3.1-8b-instant, llama3.2</p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">Chat widget pozicio</th>
+                    <td>
+                        <select name="yumma_chat_position">
+                            <option value="bottom-right" <?php selected(get_option('yumma_chat_position'), 'bottom-right'); ?>>Jobb also sarok</option>
+                            <option value="bottom-left"  <?php selected(get_option('yumma_chat_position'), 'bottom-left'); ?>>Bal also sarok</option>
                         </select>
                     </td>
                 </tr>
                 <tr>
-                    <th>Pozicio</th>
+                    <th scope="row">Rendszer prompt (system prompt)</th>
                     <td>
-                        <select name="yumma_chat_position">
-                            <option value="bottom-right" <?php selected(get_option('yumma_chat_position'), 'bottom-right'); ?>>Jobb alsó</option>
-                            <option value="bottom-left" <?php selected(get_option('yumma_chat_position'), 'bottom-left'); ?>>Bal alsó</option>
-                        </select>
+                        <textarea name="yumma_chat_system_prompt" rows="8" cols="60"
+                            placeholder="Hagyd uresen az alapertelmezett YUMMA prompthoz..."
+                        ><?php echo esc_textarea(get_option('yumma_chat_system_prompt')); ?></textarea>
+                        <p class="description">Ha ures, az alapertelmezett YUMMA tea webshop prompt lesz hasznalva. Sajat bolthoz ird felul.</p>
                     </td>
                 </tr>
             </table>
-            <?php submit_button(); ?>
+            <?php submit_button('Mentés'); ?>
         </form>
     </div>
-<?php }
+    <script>
+    function yummaEndpointToggle(sel) {
+        document.getElementById('yumma_custom_endpoint_row').style.display =
+            sel.value === 'custom' ? '' : 'none';
+    }
+    </script>
+    <?php
+}
 
-// --- REST API endpoint ---
+// --- Effective endpoint helper ---
+function yumma_chat_get_endpoint() {
+    $endpoint = get_option('yumma_chat_endpoint', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1');
+    if ($endpoint === 'custom' || !array_key_exists($endpoint, YUMMA_CHAT_ENDPOINTS)) {
+        $endpoint = get_option('yumma_chat_endpoint_custom', $endpoint);
+    }
+    return rtrim($endpoint, '/');
+}
+
+// --- REST API ---
 add_action('rest_api_init', function () {
     register_rest_route('yumma-chat/v1', '/message', [
-        'methods'  => 'POST',
-        'callback' => 'yumma_chat_handle_message',
+        'methods'             => 'POST',
+        'callback'            => 'yumma_chat_handle_message',
         'permission_callback' => '__return_true',
     ]);
 });
 
 function yumma_chat_handle_message(WP_REST_Request $request) {
-    $api_key = get_option('yumma_chat_api_key');
-    $model   = get_option('yumma_chat_model', 'qwen-plus');
+    $api_key  = get_option('yumma_chat_api_key', '');
+    $model    = get_option('yumma_chat_model', 'qwen-plus');
+    $endpoint = yumma_chat_get_endpoint();
     $messages = $request->get_param('messages');
 
-    if (!$api_key) {
-        return new WP_Error('no_api_key', 'API kulcs nincs beallitva', ['status' => 500]);
-    }
     if (empty($messages) || !is_array($messages)) {
         return new WP_Error('bad_request', 'Hianyzo uzenet', ['status' => 400]);
     }
 
-    $system_prompt = yumma_chat_system_prompt();
+    $custom_prompt = get_option('yumma_chat_system_prompt', '');
+    $system_prompt = !empty($custom_prompt) ? $custom_prompt : yumma_chat_default_prompt();
 
-    $body = json_encode([
-        'model'      => $model,
-        'max_tokens' => 600,
-        'messages'   => array_merge(
-            [['role' => 'system', 'content' => $system_prompt]],
-            $messages
-        ),
-    ]);
+    $headers = ['Content-Type' => 'application/json'];
+    if (!empty($api_key)) {
+        $headers['Authorization'] = 'Bearer ' . $api_key;
+    }
 
-    $response = wp_remote_post('https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions', [
+    $response = wp_remote_post($endpoint . '/chat/completions', [
         'timeout' => 30,
-        'headers' => [
-            'Authorization' => 'Bearer ' . $api_key,
-            'Content-Type'  => 'application/json',
-        ],
-        'body' => $body,
+        'headers' => $headers,
+        'body'    => json_encode([
+            'model'      => $model,
+            'max_tokens' => 600,
+            'messages'   => array_merge(
+                [['role' => 'system', 'content' => $system_prompt]],
+                $messages
+            ),
+        ]),
     ]);
 
     if (is_wp_error($response)) {
         return new WP_Error('api_error', $response->get_error_message(), ['status' => 502]);
     }
 
-    $data = json_decode(wp_remote_retrieve_body($response), true);
+    $data  = json_decode(wp_remote_retrieve_body($response), true);
     $reply = $data['choices'][0]['message']['content'] ?? 'Sajnalom, nem tudtam valaszolni.';
 
     return rest_ensure_response(['reply' => $reply]);
 }
 
-function yumma_chat_system_prompt() {
+function yumma_chat_default_prompt() {
     return "Te a YUMMA tea webshop (yummatea.hu) baratsagos AI asszisztense vagy.
 A YUMMA-rol: magyar szalas tea webshop, minosegi szalas teak es kiegeszitok, ingyenes szallitas 48.990 Ft felett.
 Termekek: fekete teak, zold teak, gyumolcs teak, gyogynovenyes teak, ulongok, puerhok, matcha, tea kiegeszitok (bogrek, szurok, kannicskas).
-Mindig magyarul valaszolj, legyen udvarias, baratsagos, rovid. Ha termeket keresel, iranitsd a felhasznalot a kategoriak fele.
-Arrol amit nem tudsz biztosan, mondd hogy erdeklodjon a bolt ugyfelszolgalatat az info@yummatea.hu cimen.
-NE talalj ki termekeket, arakat, keszletinformaciot — csak azt mondd amit biztosan tudsz.";
+Mindig magyarul valaszolj. Legy udvarias, baratsagos, tomor.
+Ha termeket ajanlasz, iranitsd a felhasznalot a kategoriak fele.
+Amit nem tudsz biztosan: iranyitsd az ugyfelet az info@yummatea.hu emailre.
+NE talalj ki termekeket, arakat, keszletinformaciot.";
 }
 
 // --- Frontend widget ---
 add_action('wp_footer', 'yumma_chat_render_widget');
 
 function yumma_chat_render_widget() {
-    if (!get_option('yumma_chat_api_key')) return;
-    $position = get_option('yumma_chat_position', 'bottom-right');
-    $pos_css  = $position === 'bottom-left' ? 'left:24px;' : 'right:24px;';
+    $pos     = get_option('yumma_chat_position', 'bottom-right');
+    $pos_css = ($pos === 'bottom-left') ? 'left:24px;' : 'right:24px;';
     ?>
     <style>
     #yumma-chat-btn{position:fixed;bottom:24px;<?php echo $pos_css ?>z-index:9999;background:#5c8a3c;color:#fff;border:none;border-radius:50%;width:56px;height:56px;font-size:26px;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.2);transition:background .2s;}
@@ -134,9 +197,8 @@ function yumma_chat_render_widget() {
     #yumma-chat-box{display:none;position:fixed;bottom:92px;<?php echo $pos_css ?>z-index:9999;width:340px;max-height:520px;background:#fff;border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,.18);flex-direction:column;font-family:'Segoe UI',sans-serif;overflow:hidden;}
     #yumma-chat-box.open{display:flex;}
     #yumma-chat-head{background:#5c8a3c;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;}
-    #yumma-chat-head img{width:32px;height:32px;border-radius:50%;background:#fff;padding:2px;}
-    #yumma-chat-head span{font-weight:600;font-size:.97rem;}
-    #yumma-chat-head small{font-size:.75rem;opacity:.85;display:block;}
+    #yumma-chat-head .yc-title{font-weight:600;font-size:.97rem;}
+    #yumma-chat-head .yc-sub{font-size:.75rem;opacity:.85;display:block;}
     #yumma-chat-close{margin-left:auto;background:none;border:none;color:#fff;font-size:1.3rem;cursor:pointer;line-height:1;}
     #yumma-chat-msgs{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px;min-height:200px;}
     .yc-msg{max-width:86%;padding:9px 13px;border-radius:12px;font-size:.88rem;line-height:1.5;white-space:pre-wrap;}
@@ -150,74 +212,70 @@ function yumma_chat_render_widget() {
     #yumma-chat-send:disabled{background:#ccc;cursor:not-allowed;}
     </style>
 
-    <button id="yumma-chat-btn" title="YUMMA AI Asszisztens">🍵</button>
-
+    <button id="yumma-chat-btn" title="AI Asszisztens">🍵</button>
     <div id="yumma-chat-box">
         <div id="yumma-chat-head">
             <span>🍵</span>
-            <div><span>YUMMA Asszisztens</span><small>Segitunk a teavalasztasban!</small></div>
-            <button id="yumma-chat-close">✕</button>
+            <div><span class="yc-title">YUMMA Asszisztens</span><span class="yc-sub">Segitunk a teavalasztasban!</span></div>
+            <button id="yumma-chat-close" aria-label="Bezaras">&#10005;</button>
         </div>
         <div id="yumma-chat-msgs">
-            <div class="yc-msg bot">Szia! A YUMMA tea asszisztense vagyok. 🍵 Segitsek teat talalni, vagy kerdezz a rendelessel kapcsolatban!</div>
+            <div class="yc-msg bot">Szia! A YUMMA tea asszisztense vagyok. 🍵 Miben segithetek?</div>
         </div>
         <div id="yumma-chat-foot">
             <textarea id="yumma-chat-input" rows="2" placeholder="Irj uzzenetet..."></textarea>
-            <button id="yumma-chat-send">&#10148;</button>
+            <button id="yumma-chat-send" aria-label="Kuldés">&#10148;</button>
         </div>
     </div>
-
     <script>
     (function(){
-        const btn=document.getElementById('yumma-chat-btn');
-        const box=document.getElementById('yumma-chat-box');
-        const closeBtn=document.getElementById('yumma-chat-close');
-        const msgs=document.getElementById('yumma-chat-msgs');
-        const inp=document.getElementById('yumma-chat-input');
-        const send=document.getElementById('yumma-chat-send');
-        const API='<?php echo esc_js(rest_url('yumma-chat/v1/message')); ?>';
-        const history=[];
+        var btn=document.getElementById('yumma-chat-btn'),
+            box=document.getElementById('yumma-chat-box'),
+            cls=document.getElementById('yumma-chat-close'),
+            msgs=document.getElementById('yumma-chat-msgs'),
+            inp=document.getElementById('yumma-chat-input'),
+            snd=document.getElementById('yumma-chat-send'),
+            API='<?php echo esc_js(rest_url('yumma-chat/v1/message')); ?>',
+            NONCE='<?php echo wp_create_nonce('wp_rest'); ?>',
+            history=[];
 
-        btn.addEventListener('click',()=>box.classList.toggle('open'));
-        closeBtn.addEventListener('click',()=>box.classList.remove('open'));
+        btn.onclick=function(){box.classList.toggle('open');};
+        cls.onclick=function(){box.classList.remove('open');};
 
-        function addMsg(role,text,cls=''){
-            const d=document.createElement('div');
-            d.className='yc-msg '+(cls||role);
+        function addMsg(role,text,extra){
+            var d=document.createElement('div');
+            d.className='yc-msg '+(extra||role);
             d.textContent=text;
             msgs.appendChild(d);
             msgs.scrollTop=msgs.scrollHeight;
             return d;
         }
 
-        async function sendMsg(){
-            const text=inp.value.trim();
+        function send(){
+            var text=inp.value.trim();
             if(!text)return;
-            inp.value='';send.disabled=true;
+            inp.value='';snd.disabled=true;
             history.push({role:'user',content:text});
             addMsg('user',text);
-            const t=addMsg('bot','Gondolkodom...','thinking');
-            try{
-                const r=await fetch(API,{
-                    method:'POST',
-                    headers:{'Content-Type':'application/json','X-WP-Nonce':'<?php echo wp_create_nonce('wp_rest'); ?>'},
-                    body:JSON.stringify({messages:history})
-                });
-                const d=await r.json();
+            var t=addMsg('bot','Gondolkodom...','thinking');
+            fetch(API,{
+                method:'POST',
+                headers:{'Content-Type':'application/json','X-WP-Nonce':NONCE},
+                body:JSON.stringify({messages:history})
+            }).then(function(r){return r.json();}).then(function(d){
                 t.remove();
-                const reply=d.reply||'Sajnalom, hiba tortent.';
+                var reply=d.reply||'Sajnalom, hiba tortent.';
                 history.push({role:'assistant',content:reply});
                 addMsg('bot',reply);
-            }catch(e){
+            }).catch(function(){
                 t.remove();
                 addMsg('bot','Kapcsolodasi hiba. Kerlek probald ujra.');
-            }
-            send.disabled=false;inp.focus();
+            }).finally(function(){snd.disabled=false;inp.focus();});
         }
 
-        send.addEventListener('click',sendMsg);
-        inp.addEventListener('keydown',e=>{
-            if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg();}
+        snd.onclick=send;
+        inp.addEventListener('keydown',function(e){
+            if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}
         });
     })();
     </script>
